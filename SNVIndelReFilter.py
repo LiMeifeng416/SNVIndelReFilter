@@ -2,12 +2,13 @@ import argparse
 import json
 import re
 #########################################################################################################################
+##计算筛选select_set表达式是否满足条件
 def Judge_item(item, Select_paramer,head):
     S_value = {}
     index = head.split("\t")
     for i in range(0,len(index)):
         name=index[i]
-        value = item.split("\t")[i]
+        value = item[i]
         if "%" in value:
             value=float(value.strip("%"))/100
         elif value.isdigit():
@@ -21,7 +22,7 @@ def Judge_item(item, Select_paramer,head):
         result=False
     return result
 
-
+##将储存在dict中的突变items，写出至对应的文件是否存在突变对应的频率超出100%（bug），若存在则频率按照100%输出。
 def out_file(dict,out_file,K_index):
         for key in dict:
             dter = dict[key][K_index].strip("%")
@@ -30,6 +31,7 @@ def out_file(dict,out_file,K_index):
                 dict[key][K_index - 1] = dict[key][K_index + 1]
             out_file.write("\t".join(dict[key]))
 
+##判断PASS_dict中是否存在相同的突变，若存在则将频率更高的items输出
 def Pass_judge(info,dict,K_index):
     idx = tuple(info[:5])
     if idx not in dict:
@@ -40,6 +42,7 @@ def Pass_judge(info,dict,K_index):
         if float(dter2) > float(dter):
             dict[idx] = info
 
+##判断DIS_dict中是否存在相同的突变（并且不在PASS_dict中），若存在则将频率更高的items输出
 def Dis_judge(info, Dic_union,dict, K_index):
     idx = tuple(info[:5])
     if (idx not in Dic_union) & (idx not in dict):
@@ -49,31 +52,15 @@ def Dis_judge(info, Dic_union,dict, K_index):
         dter2 = info[K_index].strip("%")
         if float(dter2) > float(dter):
             dict[idx] = info
-#########################################################################################################################
-def SNVIndelReFilter(sample_flt_ann, sample_var_ann, sample_dis_ann, out_flt, out_dis1, out_dis2,json_file):
+
+
+##判断位点是否为损伤位点
+def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head):
     glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon']
     minus_set=["C-T","G-T"]
     plus_set=["G-A","C-A"]
-    dict_dis_1={}
-    dict_flt={}
-    Dic_union={}
-
-    with open(json_file) as fp:
-        config=json.load(fp)
-        Lable=config["Lable"]
-        Tag_paramer=config["Tags"]
-        Select_paramr=config["Select_set"]
-        lab=config["Key"]
-
-    with open(sample_flt_ann)as flt_ann, open(out_flt, 'w') as flt_2, open(sample_dis_ann) as dis_ann,open (out_dis1,'w') as dis_ann_1,open (out_dis2,'w') as dis_ann_2:
-        H = next(flt_ann)
-        next(dis_ann)
-        K_index = H.split("\t").index(lab)
-        index_tags = H.split("\t").index('Tags')
-        flt_2.write(H)
-        dis_ann_1.write(H)
-        dis_ann_2.write(H)
-        head = H.strip().split("\t")
+    with open(flt_ann_file) as flt_ann:
+        next(flt_ann)
         c, s, e, r, v, t, f, amp = [head.index(i) for i in glst]
         for temp in flt_ann:
             i = temp.split("\t")
@@ -85,7 +72,7 @@ def SNVIndelReFilter(sample_flt_ann, sample_var_ann, sample_dis_ann, out_flt, ou
             adp = int(i[9])
             freq = float(i[f].strip("%"))
             amplicon = i[amp].strip("*").split(";")
-
+            ##判断突变是否为损伤类型的突变
             if ((mut in minus_set and plus == 0) or (
                     mut in plus_set and minus == 0)) and adp <= 30 and freq <= 10 and len(amplicon) == 1:
                 with open(sample_var_ann) as var_ann:
@@ -107,56 +94,82 @@ def SNVIndelReFilter(sample_flt_ann, sample_var_ann, sample_dis_ann, out_flt, ou
                             ADP_temp = int(j[sv].split("AD=")[1].split(";")[0])
                             if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2):
                                 num += 1
-
                 if num > 2:
                     out_discrad = temp.replace("PASS", "Suspect")
-                    tags = out_discrad.split("\t")[index_tags]
-                    lable = True
-                    for j in Tag_paramer:
-                        if j in tags:
-                            lable = False
-                            dis_ann_2.write(out_discrad)
-                            break
-                    if lable:
-                        Key = Judge_item(out_discrad, Select_paramr, H)
-                        if Key:
-                            info = out_discrad.split("\t")
-                            Dis_judge(info,Dic_union,dict_dis_1,K_index)
-                        else:
-                            dis_ann_2.write(out_discrad)
-
+                    info = out_discrad.split("\t")
+                    Dis_judge(info,dict_flt,dict_dis,K_index)
                 else:
                     Pass_judge(i,dict_flt,K_index)
             else:
                 Pass_judge(i,dict_flt,K_index)
 
-            Dic_union.update(dict_flt)
+##判断tags标签是否满足要求
+def Judge_tags(item_tags,Tag_paramer):
+    L = True
+    for j in Tag_paramer:
+        if j in item_tags:
+            L = False
+            break
+    return L
+
+#########################################################################################################################
+def SNVIndelReFilter(sample_flt_ann, sample_var_ann, sample_dis_ann, out_flt, out_dis1, out_dis2,json_file):
+    glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon']
+    minus_set=["C-T","G-T"]
+    plus_set=["G-A","C-A"]
+    dict_flt={}
+    dict_dis={}
+    dict_dis_1={}
+    dict_dis_2={}
+
+    with open (json_file) as fp, open(out_flt, 'w') as flt_2, open(sample_dis_ann) as dis_ann,open (out_dis1,'w') as dis_ann_1,open (out_dis2,'w') as dis_ann_2:
+        
+        config=json.load(fp)
+        Lable=config["Lable"]
+        Tag_paramer_1=config["Tags"]
+        Select_paramr_1=config["Select_set"]
+        lab=config["Key"]
+        Tag_paramer_2=config["QTags"]
+        Select_paramr_2=config["QSelect_set"]
+
+
+        H = next(dis_ann)
+        K_index = H.split("\t").index(lab)
+        index_tags = H.split("\t").index('Tags')
+        flt_2.write(H)
+        dis_ann_1.write(H)
+        dis_ann_2.write(H)
+        head = H.strip().split("\t")
+
+        Judge_damage(sample_var_ann,sample_flt_ann,dict_flt,dict_dis,K_index,head)
 
         for m in dis_ann:
-            tags = m.split("\t")[index_tags]
-            L = True
-            for j in Tag_paramer:
-                if j in tags:
-                    L = False
-                    dis_ann_2.write(m)
-                    break
-            if L:
-                Key = Judge_item(m, Select_paramr, H)
-                if Key:
-                    info = m.split("\t")
-                    idx = tuple(info[:5])
-                    if (idx not in Dic_union) & (idx not in dict_dis_1):
-                        dict_dis_1[idx] = info
-                    elif (idx not in Dic_union) & (idx in dict_dis_1):
-                        dter = dict_dis_1[idx][K_index].strip("%")
-                        dter2 = info[K_index].strip("%")
-                        if float(dter2) > float(dter):
-                            dict_dis_1[idx] = info
+            info = m.split("\t")
+            Dis_judge(info, dict_flt,dict_dis, K_index)
+
+        for key in dict_dis.keys():
+            Tags=dict_dis[key][index_tags]
+            Value=dict_dis[key]
+            Tags_list=Tags.split(";")
+            if set(Tags_list).isdisjoint(Tag_paramer_2):
+                lable_1=Judge_tags(Tags,Tag_paramer_1)
+                lable_2=Judge_item(Value, Select_paramr_1,H)
+                if lable_1 and lable_2:
+                    dict_dis_1[key]=Value
                 else:
-                    dis_ann_2.write(m)
+                    dict_dis_2[key]=Value
+            else:
+                lable_1=Judge_tags(Tags,Tag_paramer_1)
+                lable_2=Judge_item(Value, Select_paramr_2,H)
+                if lable_1 and lable_2:
+                    dict_dis_1[key]=Value
+                else:
+                    dict_dis_2[key]=Value
+            
 
         out_file(dict_flt,flt_2,K_index)
         out_file(dict_dis_1,dis_ann_1, K_index)
+        out_file(dict_dis_2,dis_ann_2, K_index)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SNVIndelReFilter")
     parser.add_argument("-i", "--flt", help="flt.ann file", required=True)
