@@ -3,6 +3,17 @@ import json
 import re
 from sys import argv
 from smart_open import open
+"""
+
+History:
+Version 2.0.0 
+Version 2.1.0 Data:2023.12.14
+1.增加对dis.ann文件中的损伤位点进行判断
+2.将多次出现的位点标记符号由“*”变为“#”
+3.将判断同批次中3个及以上相同非SNP位点的范围由PASS列表中的位点调整至PASS&discard中的所有位点
+#未用：4.增加对整批样本fusion结果的注释，同批次中多次检出的融合添加“#”标记。
+
+"""
 #########################################################################################################################
 ##计算筛选select_set表达式是否满足条件
 def Judge_item(item, Select_paramer,head):
@@ -59,6 +70,7 @@ def Dis_judge(info, Dic_union,dict, K_index):
 
 
 ##判断位点是否为损伤位点
+###判断PASS列表位点损失情况
 def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head,Lable):
     glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon','AltDepth','Plus','Minus']
     minus_set=["C-T","G-T"]
@@ -107,6 +119,59 @@ def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head,Lable)
             else:
                 Pass_judge(i,dict_flt,K_index)
 
+###判断dis列表位点损失情况，同时判断dis中是否存在相同突变检出（同时PASS中无检出）
+def Judge_damage_dis(var_ann_file,dis_ann_file,dict_flt,dict_dis,K_index,head,Lable):
+    glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon','AltDepth','Plus','Minus']
+    minus_set=["C-T","G-T"]
+    plus_set=["G-A","C-A"]
+    with open(dis_ann_file) as dis_ann:
+        next(dis_ann)
+        c, s, e, r, v, t, f, amp,ad,p,m = [head.index(i) for i in glst]
+        for temp in dis_ann:
+            i = temp.split("\t")
+            ref = i[r]
+            var = i[v]
+            mut = ref + "-" + var
+            plus = int(i[p])
+            minus = int(i[m])
+            adp = int(i[ad])
+            freq = float(i[f].strip("%"))
+            amplicon = i[amp].strip("*").split(";")
+            ##判断突变是否为损伤类型的突变
+            if ((mut in minus_set and plus == 0) or (
+                    mut in plus_set and minus == 0)) and adp <= 30 and freq <= 10 and len(amplicon) == 1:
+                with open(sample_var_ann) as var_ann:
+                    var_lst = ['Ref', 'Var', 'Total', 'SSBC', 'Amplicon']
+                    head_var = next(var_ann)
+                    head_var = head_var.strip().split("\t")
+                    rv, vv, tv, sv, av = [head_var.index(m) for m in var_lst]
+                    num = 0
+                    for j in var_ann:
+                        j = j.split("\t")
+                        amplicon_var = j[av].strip("*")
+                        if (amplicon_var == amplicon[0]) and (j[rv] == ref and j[vv] == var) and Lable=="Total":
+                            freq_temp = float(j[tv].split("AF=")[1].split(";")[0]) * 100
+                            ADP_temp = int(j[tv].split("AD=")[1].split(";")[0])
+                            if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2) :
+                                num += 1
+                        elif (amplicon_var == amplicon[0]) and (j[rv] == ref and j[vv] == var) and Lable=="SSBC":
+                            freq_temp = float(j[sv].split("AF=")[1].split(";")[0]) * 100
+                            ADP_temp = int(j[sv].split("AD=")[1].split(";")[0])
+                            if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2):
+                                num += 1
+                if num >= 2:
+                    Tags_new="Suspect;"+i[t]
+                    #out_discrad = temp.replace("PASS", "Suspect")
+                    #info = out_discrad.split("\t")
+                    i[t]=Tags_new
+                    Dis_judge(i,dict_flt,dict_dis,K_index)
+                else:
+                    Dis_judge(i,dict_flt,dict_dis,K_index)
+            else:
+                Dis_judge(i,dict_flt,dict_dis,K_index)
+
+
+
 ##判断tags标签是否满足要求
 def Judge_tags(item_tags,Tag_paramer):
     item_tags_list=item_tags.split(";")
@@ -138,6 +203,7 @@ def SNVIndelReFilter_Sample(sample_flt_ann, sample_var_ann, sample_dis_ann, out_
         Tag_paramer_2=config["QTags"]
         Select_paramr_2=config["QSelect_set"]
 
+
         H = next(dis_ann)
         K_index = H.split("\t").index(lab)
         index_tags = H.split("\t").index('Tags')
@@ -147,10 +213,7 @@ def SNVIndelReFilter_Sample(sample_flt_ann, sample_var_ann, sample_dis_ann, out_
         head = H.strip().split("\t")
 
         Judge_damage(sample_var_ann,sample_flt_ann,dict_flt,dict_dis,K_index,head,Lable)
-
-        for m in dis_ann:
-            info = m.split("\t")
-            Dis_judge(info, dict_flt,dict_dis, K_index)
+        Judge_damage_dis(sample_var_ann,sample_dis_ann,dict_flt,dict_dis,K_index,head,Lable)
 
         for key in dict_dis.keys():
             Tags=dict_dis[key][index_tags]
@@ -175,8 +238,6 @@ def SNVIndelReFilter_Sample(sample_flt_ann, sample_var_ann, sample_dis_ann, out_
                     lable_2=Judge_item(Value, Select_paramr_2,H)
                     lable_3=Judge_tags(Tags,Low_lable)
                     if lable_1 and lable_2 and lable_3:
-                        dict_dis_1[key]=Value
-                    elif 'ITD' in Tags:
                         dict_dis_1[key]=Value
                     else:
                         dict_dis_2[key]=Value
@@ -224,7 +285,7 @@ def dis_Rewrite(file,dic,dis_out_file,num):
                 dis_out_ann.write(i)
             else:
                 tag=i.split("\t")[Tag_index]
-                replace_tag="**"+tag
+                replace_tag="!"+tag
                 i=i.replace(tag,replace_tag)
                 dis_out_ann.write(i)
             
@@ -244,17 +305,17 @@ def flt_Rewrite(flt_file,dic,dic_HotSpot,flt_out_file,sample,num_p,num_h,hot_typ
                     flt_out_ann.write(i)
                 elif dic[i.split("\t")[CDS_index]]<num_p and dic_HotSpot[sample]>=num_h:
                     tag=i.split("\t")[Tag_index]
-                    replece_tag="*"+tag
+                    replece_tag="#"+tag
                     i=i.replace(tag,replece_tag)
                     flt_out_ann.write(i)
                 elif dic[i.split("\t")[CDS_index]]>=num_p and dic_HotSpot[sample]>=num_h:
                     tag=i.split("\t")[Tag_index]
-                    replece_tag="***"+tag
+                    replece_tag="#!"+tag
                     i=i.replace(tag,replece_tag)
                     flt_out_ann.write(i)
                 elif dic[i.split("\t")[CDS_index]]>=num_p and dic_HotSpot[sample]<num_h:
                     tag=i.split("\t")[Tag_index]
-                    replece_tag="**"+tag
+                    replece_tag="!"+tag
                     i=i.replace(tag,replece_tag)
                     flt_out_ann.write(i)
             else:
@@ -262,9 +323,46 @@ def flt_Rewrite(flt_file,dic,dic_HotSpot,flt_out_file,sample,num_p,num_h,hot_typ
                     flt_out_ann.write(i)
                 else:
                     tag=i.split("\t")[Tag_index]
-                    replece_tag="**"+tag
+                    replece_tag="!"+tag
                     i=i.replace(tag,replece_tag)
                     flt_out_ann.write(i)
+#########################
+###对fusion文件进行判断，同批次样本中检出多个相同融合型，且其中存在强阳融合，其余拷贝数相差10倍及以上的融合标记#
+
+###确定所有检出融合中拷贝数最大的情况
+def read_fus(fus_file,dic):
+	with open(fus_file) as fus_ann:
+		head=next(fus_ann)
+		copy_index=head.split("\t").index("Copies")
+		fusion_index=head.split("\t").index("Fusion")
+		for i in fus_ann:
+			fusion=i.split("\t")[fusion_index]
+			copies=i.split("\t")[copy_index]
+			if fusion not in dic:
+				dic[fusion]=copies
+			else:
+				if int(copies) > int(dic[fusion]):
+					dic[fusion]=copies
+
+####对拷贝数相差10倍及以上的融合进行注释“#”
+def Rewrite_fus(fus_file,dic,out_fus_file):
+	with open(fus_file) as fus_ann,open(out_fus_file,'w') as out_fus_ann:
+		head=next(fus_ann)
+		copy_index=head.split("\t").index("Copies")
+		fusion_index=head.split("\t").index("Fusion")
+		out_fus_ann.write(head)
+		for i in fus_ann:
+			fusion=i.split("\t")[fusion_index]
+			copies=int(i.split("\t")[copy_index])
+			if copies <= int(dic[fusion])/10:
+				replace_fusion="#"+fusion
+				i=i.replace(fusion,replace_fusion)
+				out_fus_ann.write(i)
+			else:
+				out_fus_ann.write(i)
+
+##########################################################################
+
 
 def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,out_flt_suffix,out_dis_suffix,dirs,json_file):
 	Dic={}
@@ -273,6 +371,7 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
 	control_Dic={}
 	control_Dic_flt={}
 	control_Dic_HotSpot={}
+	Dic_fus={}
 
 	with open (json_file) as fp:
 		config=json.load(fp)
@@ -280,6 +379,26 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
 		num_pass=config["number_pass"]
 		num_hot=config["number_HotSpot"]
 		hot_type=config["HotSpot_type"]
+		if 'fusion_suffix' in config:
+			fusion_suffix=config["fusion_suffix"]
+
+			with open(filelist_file) as FILELIST:
+				for i in FILELIST:
+					sample=i.split(" ")[0]
+					flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix
+					dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix
+					read_fus(flt_fus,Dic_fus)
+					read_fus(dis_fus,Dic_fus)
+			with open(filelist_file) as FILELIST:
+				for i in FILELIST:
+					sample=i.split(" ")[0]
+					flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix
+					out_flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix+"2"
+					dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix
+					out_dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix+"2"
+					Rewrite_fus(flt_fus,Dic_fus,out_flt_fus)
+					Rewrite_fus(dis_fus,Dic_fus,out_dis_fus)
+
 	####获取不同位点的重复次数
 	with open(filelist_file) as FILELIST:
 		for i in FILELIST:
@@ -328,7 +447,7 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
 				dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
 				flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
 				dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
-				flt_Rewrite(flt_file,Dic_flt,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
+				flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
 			else:
 				sample=i.split(" ")[0]
 				flt_file=dirs+sample+"/"+sample+flt_suffix
@@ -336,7 +455,7 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
 				dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
 				flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
 				dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
-				flt_Rewrite(flt_file,Dic_flt,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
+				flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
 
 				control_sample=i.split(" ")[3]
 				control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
@@ -344,14 +463,14 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
 				control_dis_file_out=dirs+sample+"/"+control_sample+out_dis_suffix
 				control_flt_file_out=dirs+sample+"/"+control_sample+out_flt_suffix
 				dis_Rewrite(control_dis_file,control_Dic,control_dis_file_out,num_dis)
-				flt_Rewrite(control_flt_file,control_Dic_flt,control_Dic_HotSpot,control_flt_file_out,sample,num_pass,num_hot,hot_type)
+				flt_Rewrite(control_flt_file,control_Dic,control_Dic_HotSpot,control_flt_file_out,sample,num_pass,num_hot,hot_type)
 
 
 ###########################################################################################################################################
 def argparser():
     desc='''Samples and Summary SNVIndelReFilter '''
     prog='SNVIndelReFilter'
-    version='v2.0.0'
+    version='v2.1.0'
     parser=argparse.ArgumentParser(description=desc,prog=prog,add_help=False)
     required=parser.add_argument_group('optional')
     subparsers=parser.add_subparsers(help='sub-command help')
