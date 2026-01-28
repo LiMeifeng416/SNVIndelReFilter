@@ -19,7 +19,9 @@ from collections import defaultdict
 # 2.Sample中discard过滤位点按照位点类型设置不同的过滤阈值功能；(可通过配置文件设置)
 # 3.增加sample中discard精简条件，当discard中hotspot/vip/significance4、5类位点满足频率、adp保留条件，
 #   但是存在Tags中的标签[high_ND等]时，仍然会被保留在主表格discard中   2024.11.21
-
+# 
+#Version 2.2.1 Data:2026.01.05
+#1.配对流程中control样本对应的文件前缀由原来的[CTRL_ID]更改为[SAM_ID].ctrl, 解决SNVIndelReFilter Summary步骤无法识别配对流程中对照样本的问题；
 # """
 
 #新增 var_ann文件读取
@@ -486,21 +488,27 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
                                 read_Hotspot(sample,flt_file,Dic_HotSpot,hot_type)
                         else:
                                 sample=i.split(" ")[0]
-                                control_sample=i.split(" ")[3]
-                                flt_file=dirs+sample+"/"+sample+flt_suffix
-                                dis_file=dirs+sample+"/"+sample+dis_suffix
+                                #control_sample=i.split(" ")[3]
+                                sample_flt_suffix=flt_suffix.split(",")[0]
+                                control_flt_suffix=flt_suffix.split(",")[1]
+                                sample_dis_suffix=dis_suffix.split(",")[0]
+                                control_dis_suffix=dis_suffix.split(",")[1]
+                                flt_file=dirs+sample+"/"+sample+sample_flt_suffix
+                                dis_file=dirs+sample+"/"+sample+sample_dis_suffix
                                 if discard_suffix:
-                                        discard_file=dirs+sample+"/"+sample+discard_suffix
+                                        sample_discard_suffix=discard_suffix.split(",")[0]
+                                        discard_file=dirs+sample+"/"+sample+sample_discard_suffix
                                         read(discard_file,Dic)
                                 read(flt_file,Dic)
                                 read(flt_file,Dic_flt)
                                 read(dis_file,Dic)
                                 read_Hotspot(sample,flt_file,Dic_HotSpot,hot_type)
 
-                                control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
-                                control_dis_file=dirs+sample+"/"+control_sample+dis_suffix
+                                control_flt_file=dirs+sample+"/"+sample+control_flt_suffix
+                                control_dis_file=dirs+sample+"/"+sample+control_dis_suffix
                                 if discard_suffix:
-                                        control_discard_file=dirs+sample+"/"+control_sample+discard_suffix
+                                        control_discard_suffix=discard_suffix.split(",")[1]
+                                        control_discard_file=dirs+sample+"/"+sample+control_discard_suffix
                                         read(control_discard_file,control_Dic)
                                 read(control_flt_file,control_Dic)
                                 read(control_flt_file,control_Dic_flt)
@@ -519,19 +527,28 @@ def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,
                                 dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
                                 flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
                         else:
+                                sample_flt_suffix=flt_suffix.split(",")[0]
+                                control_flt_suffix=flt_suffix.split(",")[1]
+                                sample_dis_suffix=dis_suffix.split(",")[0]
+                                control_dis_suffix=dis_suffix.split(",")[1]
+                                out_sample_dis_suffix=out_dis_suffix.split(",")[0]
+                                out_control_dis_suffix=out_dis_suffix.split(",")[1]
+                                out_sample_flt_suffix=out_flt_suffix.split(",")[0]
+                                out_control_flt_suffix=out_flt_suffix.split(",")[1]
+
                                 sample=i.split(" ")[0]
-                                flt_file=dirs+sample+"/"+sample+flt_suffix
-                                dis_file=dirs+sample+"/"+sample+dis_suffix
-                                dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
-                                flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
+                                flt_file=dirs+sample+"/"+sample+sample_flt_suffix
+                                dis_file=dirs+sample+"/"+sample+sample_dis_suffix
+                                dis_file_out=dirs+sample+"/"+sample+out_sample_dis_suffix
+                                flt_file_out=dirs+sample+"/"+sample+out_sample_flt_suffix
                                 dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
                                 flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
 
-                                control_sample=i.split(" ")[3]
-                                control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
-                                control_dis_file=dirs+sample+"/"+control_sample+dis_suffix
-                                control_dis_file_out=dirs+sample+"/"+control_sample+out_dis_suffix
-                                control_flt_file_out=dirs+sample+"/"+control_sample+out_flt_suffix
+                                #control_sample=i.split(" ")[3]
+                                control_flt_file=dirs+sample+"/"+sample+control_flt_suffix
+                                control_dis_file=dirs+sample+"/"+sample+control_dis_suffix
+                                control_dis_file_out=dirs+sample+"/"+sample+out_control_dis_suffix
+                                control_flt_file_out=dirs+sample+"/"+sample+out_control_flt_suffix
                                 dis_Rewrite(control_dis_file,control_Dic,control_dis_file_out,num_dis)
                                 flt_Rewrite(control_flt_file,control_Dic,control_Dic_HotSpot,control_flt_file_out,sample,num_pass,num_hot,hot_type)
 
