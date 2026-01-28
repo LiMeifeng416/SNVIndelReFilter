@@ -3,20 +3,102 @@ import json
 import re
 from sys import argv
 from smart_open import open
-"""
+from collections import defaultdict
+# """
 
-History:
-Version 2.0.0 
-Version 2.1.0 Data:2023.12.14
-1.增加对dis.ann文件中的损伤位点进行判断
-2.将多次出现的位点标记符号由“*”变为“#”
-3.将判断同批次中3个及以上相同非SNP位点的范围由PASS列表中的位点调整至PASS&discard中的所有位点
-#未用：4.增加对整批样本fusion结果的注释，同批次中多次检出的融合添加“#”标记。
+# History:
+# Version 2.0.0 
+# Version 2.1.0 Data:2023.12.14
+# 1.增加对dis.ann文件中的损伤位点进行判断
+# 2.将多次出现的位点标记符号由“*”变为“#”
+# 3.将判断同批次中3个及以上相同非SNP位点的范围由PASS列表中的位点调整至PASS&discard中的所有位点
+# #未用：4.增加对整批样本fusion结果的注释，同批次中多次检出的融合添加“#”标记。
 
-"""
+# Version 2.2.0 Data:2024.11.21
+# 1.增加sample中脱氨基损伤判断阈值可自定义功能   2024.08.08
+# 2.Sample中discard过滤位点按照位点类型设置不同的过滤阈值功能；(可通过配置文件设置)
+# 3.增加sample中discard精简条件，当discard中hotspot/vip/significance4、5类位点满足频率、adp保留条件，
+#   但是存在Tags中的标签[high_ND等]时，仍然会被保留在主表格discard中   2024.11.21
+
+# """
+
+#新增 var_ann文件读取
+def format_var_ann(var_file):
+    DataType=["Total",'SSBC',"DSBC"]
+    var_ann_dict=defaultdict(dict)
+    with open(var_file) as var_ann_file:
+        lst=["#Chr","Start","End","Var","Ref"]
+        var_head=next(var_ann_file).strip("/n").split("\t")
+        chr_index,start_inde,end_index,var_index,ref_index=[var_head.index(i) for i in lst]
+        length=len(var_head)
+        for item in var_ann_file:
+            item=item.strip("\n").split("\t")
+            key=item[chr_index]+"_"+item[start_inde]+"_"+item[end_index]+"_"+item[ref_index]+"_"+item[var_index]
+            for index in range(0,length):
+                lable=var_head[index]
+                values=item[index]
+
+                if lable in DataType:
+                    values_list=values.strip("\n").split(";")
+                    for m in values_list:
+                        m_list=m.split("=")
+                        if ":" not in m_list[1]:
+                            if lable=="Total":
+                                name="t"+m_list[0]
+                            elif lable=="SSBC":
+                                name="s"+m_list[0]
+                            else:
+                                name="u"+m_list[0]     
+                            if is_number(m_list[1]):
+                                if m_list[1].isdigit():
+                                    values=int(m_list[1])
+                                else:
+                                    values=float(m_list[1])
+                            var_ann_dict[key][name]=values
+                        else:
+                            m_lists=m_list[1].split(":")
+                            lens=len(m_lists)
+                            for num in range(0,lens):
+                                if lable=="Total":
+                                    name="t"+m_list[0]+str(num)
+                                elif lable=="SSBC":
+                                    name="s"+m_list[0]+str(num)
+                                else:
+                                    name="u"+m_list[0]+str(num)
+                                if is_number(m_lists[num]):
+                                    if m_lists[num].isdigit():
+                                        values=int(m_lists[num])
+                                    else:
+                                        values=float(m_lists[num])
+                                var_ann_dict[key][name]=values
+                else:
+                    if is_number(values):
+                        if values.isdigit():
+                            values=int(values)
+                        else:
+                            values=float(values)
+                    var_ann_dict[key][lable]=values
+    return(var_ann_dict)
+
+
+def is_number(s):
+    try:  # 如果能运行float(s)语句，返回True（字符串s是浮点数）
+        float(s)
+        return True
+    except ValueError:  # ValueError为Python的一种标准异常，表示"传入无效的参数"
+        pass  # 如果引发了ValueError这种异常，不做任何事情（pass：不做任何事情，一般用做占位语句）
+    try:
+        import unicodedata  # 处理ASCii码的包
+        unicodedata.numeric(s)  # 把一个表示数字的字符串转换为浮点数返回的函数
+        return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
 #########################################################################################################################
 ##计算筛选select_set表达式是否满足条件
-def Judge_item(item, Select_paramer,head):
+def Judge_item(item,Select_paramer,head):
     S_value = {}
     index = head.strip("\n").split("\t")
     for i in range(0,len(index)):
@@ -71,12 +153,12 @@ def Dis_judge(info, Dic_union,dict, K_index):
 
 ##判断位点是否为损伤位点
 ###判断PASS列表位点损失情况
-def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head,Lable):
+def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head,Lable,Damage_define,Damage_judge,Damage_threshold,Var_ann_dict):
     glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon','AltDepth','Plus','Minus']
     minus_set=["C-T","G-T"]
     plus_set=["G-A","C-A"]
     with open(flt_ann_file) as flt_ann:
-        next(flt_ann)
+        Head=next(flt_ann)
         c, s, e, r, v, t, f, amp,ad,p,m = [head.index(i) for i in glst]
         for temp in flt_ann:
             i = temp.split("\t")
@@ -87,30 +169,26 @@ def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head,Lable)
             minus = int(i[m])
             adp = int(i[ad])
             freq = float(i[f].strip("%"))
-            amplicon = i[amp].strip("*").split(";")
+            amplicon = i[amp].strip("*")
             ##判断突变是否为损伤类型的突变
-            if ((mut in minus_set and plus == 0) or (
-                    mut in plus_set and minus == 0)) and adp <= 30 and freq <= 10 and len(amplicon) == 1:
-                with open(sample_var_ann) as var_ann:
-                    var_lst = ['Ref', 'Var', 'Total', 'SSBC', 'Amplicon']
-                    head_var = next(var_ann)
-                    head_var = head_var.strip().split("\t")
-                    rv, vv, tv, sv, av = [head_var.index(m) for m in var_lst]
-                    num = 0
-                    for j in var_ann:
-                        j = j.split("\t")
-                        amplicon_var = j[av].strip("*")
-                        if (amplicon_var == amplicon[0]) and (j[rv] == ref and j[vv] == var) and Lable=="Total":
-                            freq_temp = float(j[tv].split("AF=")[1].split(";")[0]) * 100
-                            ADP_temp = int(j[tv].split("AD=")[1].split(";")[0])
-                            if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2):
-                                num += 1
-                        elif (amplicon_var == amplicon[0]) and (j[rv] == ref and j[vv] == var) and Lable=="SSBC":
-                            freq_temp = float(j[sv].split("AF=")[1].split(";")[0]) * 100
-                            ADP_temp = int(j[sv].split("AD=")[1].split(";")[0])
-                            if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2):
-                                num += 1
-                if num > 2:
+            if Judge_item( i,Damage_define,Head):  ##遍历判断PASS列表中每一个位点是否符合损伤位点的特征
+                num=0
+                #print(amplicon,type(amplicon))
+                for key,value in Var_ann_dict.items():
+                    temp_dict=defaultdict(dict)
+                    if Var_ann_dict[key]["Ref"]==ref and Var_ann_dict[key]["Var"]==var and Var_ann_dict[key]["Amplicon"].strip("*") == amplicon:
+                        #print(Var_ann_dict[key]["Amplicon"].strip("*"),type(Var_ann_dict[key]["Amplicon"].strip("*")))
+                        temp_dict[key]=Var_ann_dict[key]
+                        temp_dict[key]["AltDepth"]=adp
+                        temp_dict[key]["Freq"]=freq/100
+                        if eval(Damage_judge.format_map(temp_dict[key])):
+                            num += 1
+                            if num > Damage_threshold:
+                                out_discrad = temp.replace("PASS", "Suspect")
+                                info = out_discrad.split("\t")
+                                Dis_judge(info,dict_flt,dict_dis,K_index)
+                                break
+                if num > Damage_threshold:
                     out_discrad = temp.replace("PASS", "Suspect")
                     info = out_discrad.split("\t")
                     Dis_judge(info,dict_flt,dict_dis,K_index)
@@ -119,13 +197,14 @@ def Judge_damage(var_ann_file,flt_ann_file,dict_flt,dict_dis,K_index,head,Lable)
             else:
                 Pass_judge(i,dict_flt,K_index)
 
+
 ###判断dis列表位点损失情况，同时判断dis中是否存在相同突变检出（同时PASS中无检出）
-def Judge_damage_dis(var_ann_file,dis_ann_file,dict_flt,dict_dis,K_index,head,Lable):
+def Judge_damage_dis(var_ann_file,dis_ann_file,dict_flt,dict_dis,K_index,head,Lable,Damage_define,Damage_judge,Damage_threshold,Var_ann_dict):
     glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon','AltDepth','Plus','Minus']
     minus_set=["C-T","G-T"]
     plus_set=["G-A","C-A"]
     with open(dis_ann_file) as dis_ann:
-        next(dis_ann)
+        Head = next(dis_ann)
         c, s, e, r, v, t, f, amp,ad,p,m = [head.index(i) for i in glst]
         for temp in dis_ann:
             i = temp.split("\t")
@@ -136,41 +215,28 @@ def Judge_damage_dis(var_ann_file,dis_ann_file,dict_flt,dict_dis,K_index,head,La
             minus = int(i[m])
             adp = int(i[ad])
             freq = float(i[f].strip("%"))
-            amplicon = i[amp].strip("*").split(";")
+            amplicon = i[amp].strip("*")
             ##判断突变是否为损伤类型的突变
-            if ((mut in minus_set and plus == 0) or (
-                    mut in plus_set and minus == 0)) and adp <= 30 and freq <= 10 and len(amplicon) == 1:
-                with open(sample_var_ann) as var_ann:
-                    var_lst = ['Ref', 'Var', 'Total', 'SSBC', 'Amplicon']
-                    head_var = next(var_ann)
-                    head_var = head_var.strip().split("\t")
-                    rv, vv, tv, sv, av = [head_var.index(m) for m in var_lst]
-                    num = 0
-                    for j in var_ann:
-                        j = j.split("\t")
-                        amplicon_var = j[av].strip("*")
-                        if (amplicon_var == amplicon[0]) and (j[rv] == ref and j[vv] == var) and Lable=="Total":
-                            freq_temp = float(j[tv].split("AF=")[1].split(";")[0]) * 100
-                            ADP_temp = int(j[tv].split("AD=")[1].split(";")[0])
-                            if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2) :
-                                num += 1
-                        elif (amplicon_var == amplicon[0]) and (j[rv] == ref and j[vv] == var) and Lable=="SSBC":
-                            freq_temp = float(j[sv].split("AF=")[1].split(";")[0]) * 100
-                            ADP_temp = int(j[sv].split("AD=")[1].split(";")[0])
-                            if ADP_temp >= (adp / 2) or 1 <= freq_temp <= 3 or freq_temp>=(freq/2):
-                                num += 1
-                if num >= 2:
-                    Tags_new="Suspect;"+i[t]
-                    #out_discrad = temp.replace("PASS", "Suspect")
-                    #info = out_discrad.split("\t")
-                    i[t]=Tags_new
-                    Dis_judge(i,dict_flt,dict_dis,K_index)
-                else:
-                    Dis_judge(i,dict_flt,dict_dis,K_index)
+            if Judge_item( i,Damage_define,Head):
+                num=0
+                for key,values in Var_ann_dict.items():
+                    temp_dict=defaultdict(dict)
+                    if Var_ann_dict[key]["Ref"] ==ref and Var_ann_dict[key]["Var"]==var and Var_ann_dict[key]["Amplicon"].strip("*")==amplicon:
+                        temp_dict[key]=Var_ann_dict[key]
+                        temp_dict[key]["AltDepth"]=adp
+                        temp_dict[key]["Freq"]=freq/100
+                        #print (eval(Damage_judge.format_map(temp_dict[key])))
+                        if eval(Damage_judge.format_map(temp_dict[key])):
+                            num += 1
+                            if num > Damage_threshold:
+                                Tags_new="Suspect;"+i[t]
+                                i[t]=Tags_new
+                                Dis_judge(i,dict_flt,dict_dis,K_index)
+                                break
+
+                Dis_judge(i,dict_flt,dict_dis,K_index)
             else:
                 Dis_judge(i,dict_flt,dict_dis,K_index)
-
-
 
 ##判断tags标签是否满足要求
 def Judge_tags(item_tags,Tag_paramer):
@@ -183,6 +249,7 @@ def Judge_tags(item_tags,Tag_paramer):
                 break
     return L
 
+
 #########################################################################################################################
 def SNVIndelReFilter_Sample(sample_flt_ann, sample_var_ann, sample_dis_ann, out_flt, out_dis1, out_dis2,json_file):
     glst=['Chr','Start','End','Ref','Alt','Tags','Freq','Amplicon']
@@ -193,17 +260,20 @@ def SNVIndelReFilter_Sample(sample_flt_ann, sample_var_ann, sample_dis_ann, out_
     dict_dis_1={}
     dict_dis_2={}
     Low_lable=['Low_Freq','Low_Dep','Low_ADP']
+    Var_ann_dict=format_var_ann(sample_var_ann)
     with open (json_file) as fp, open(out_flt, 'w') as flt_2, open(sample_dis_ann) as dis_ann,open (out_dis1,'w') as dis_ann_1,open (out_dis2,'w') as dis_ann_2:
         
         config=json.load(fp)
         Lable=config["Lable"]
         Tag_paramer_1=config["Tags"]
+        Tag_paramer_3=config["HTags"]
         Select_paramr_1=config["Select_set"]
         lab=config["Key"]
         Tag_paramer_2=config["QTags"]
         Select_paramr_2=config["QSelect_set"]
-
-
+        Damage_define=config["Damage_Define"]
+        Damage_judge=config["Damage_judge"]
+        Damage_threshold=config["Damage_background_num"]
         H = next(dis_ann)
         K_index = H.split("\t").index(lab)
         index_tags = H.split("\t").index('Tags')
@@ -212,22 +282,23 @@ def SNVIndelReFilter_Sample(sample_flt_ann, sample_var_ann, sample_dis_ann, out_
         dis_ann_2.write(H)
         head = H.strip().split("\t")
 
-        Judge_damage(sample_var_ann,sample_flt_ann,dict_flt,dict_dis,K_index,head,Lable)
-        Judge_damage_dis(sample_var_ann,sample_dis_ann,dict_flt,dict_dis,K_index,head,Lable)
+        Judge_damage(sample_var_ann,sample_flt_ann,dict_flt,dict_dis,K_index,head,Lable,Damage_define,Damage_judge,Damage_threshold,Var_ann_dict)
+        Judge_damage_dis(sample_var_ann,sample_dis_ann,dict_flt,dict_dis,K_index,head,Lable,Damage_define,Damage_judge,Damage_threshold,Var_ann_dict)
 
         for key in dict_dis.keys():
             Tags=dict_dis[key][index_tags]
             Value=dict_dis[key]
             Tags_list=Tags.split(";")
-            if set(Tags_list).isdisjoint(Tag_paramer_2):
+            if set(Tags_list).isdisjoint(Tag_paramer_2): #如果两个集合没有共同元素，返回TRUE
                 lable_1=Judge_tags(Tags,Tag_paramer_1)
                 lable_2=Judge_item(Value, Select_paramr_1,H)
-                if lable_1 and lable_2:
+                lable_3=Judge_item(Value, Tag_paramer_3,H)
+                if (lable_1 or lable_3) and lable_2: ##当HotSpot/VIP 或者significance为4 5类时，即使存在Tag_paramer_1标签，也保留
                     dict_dis_1[key]=Value
                 else:
                     dict_dis_2[key]=Value
             else:
-                if set(Tags_list).issubset(Tag_paramer_2):
+                if set(Tags_list).issubset(Tag_paramer_2): #判断Tags_list中的所有元素是否都包含在Tag_paramer_2中
                     lable_1=Judge_item(Value, Select_paramr_2,H)
                     if lable_1:
                         dict_dis_1[key]=Value
@@ -273,7 +344,7 @@ def read_Hotspot(sample_name,file,dic,hot_type):
             if Judge_item(temp,hot_type,head):
                 dic[sample_name]+=1
 
-#####对dis列表中的位点进行重过滤，在同批次中多次检出的位点加上标记。
+#####对dis列表中的位点进行重过滤，在同批次中多次检出的位��加上标记。
 def dis_Rewrite(file,dic,dis_out_file,num):
     with open(file) as file_ann,open(dis_out_file,'w') as dis_out_ann:
         head=next(file_ann)
@@ -331,146 +402,145 @@ def flt_Rewrite(flt_file,dic,dic_HotSpot,flt_out_file,sample,num_p,num_h,hot_typ
 
 ###确定所有检出融合中拷贝数最大的情况
 def read_fus(fus_file,dic):
-	with open(fus_file) as fus_ann:
-		head=next(fus_ann)
-		copy_index=head.split("\t").index("Copies")
-		fusion_index=head.split("\t").index("Fusion")
-		for i in fus_ann:
-			fusion=i.split("\t")[fusion_index]
-			copies=i.split("\t")[copy_index]
-			if fusion not in dic:
-				dic[fusion]=copies
-			else:
-				if int(copies) > int(dic[fusion]):
-					dic[fusion]=copies
+        with open(fus_file) as fus_ann:
+                head=next(fus_ann)
+                copy_index=head.split("\t").index("Copies")
+                fusion_index=head.split("\t").index("Fusion")
+                for i in fus_ann:
+                        fusion=i.split("\t")[fusion_index]
+                        copies=i.split("\t")[copy_index]
+                        if fusion not in dic:
+                                dic[fusion]=copies
+                        else:
+                                if int(copies) > int(dic[fusion]):
+                                        dic[fusion]=copies
 
 ####对拷贝数相差10倍及以上的融合进行注释“#”
 def Rewrite_fus(fus_file,dic,out_fus_file):
-	with open(fus_file) as fus_ann,open(out_fus_file,'w') as out_fus_ann:
-		head=next(fus_ann)
-		copy_index=head.split("\t").index("Copies")
-		fusion_index=head.split("\t").index("Fusion")
-		out_fus_ann.write(head)
-		for i in fus_ann:
-			fusion=i.split("\t")[fusion_index]
-			copies=int(i.split("\t")[copy_index])
-			if copies <= int(dic[fusion])/10:
-				replace_fusion="#"+fusion
-				i=i.replace(fusion,replace_fusion)
-				out_fus_ann.write(i)
-			else:
-				out_fus_ann.write(i)
+        with open(fus_file) as fus_ann,open(out_fus_file,'w') as out_fus_ann:
+                head=next(fus_ann)
+                copy_index=head.split("\t").index("Copies")
+                fusion_index=head.split("\t").index("Fusion")
+                out_fus_ann.write(head)
+                for i in fus_ann:
+                        fusion=i.split("\t")[fusion_index]
+                        copies=int(i.split("\t")[copy_index])
+                        if copies <= int(dic[fusion])/10:
+                                replace_fusion="#"+fusion
+                                i=i.replace(fusion,replace_fusion)
+                                out_fus_ann.write(i)
+                        else:
+                                out_fus_ann.write(i)
 
 ##########################################################################
 
-
 def SNVIndelReFilter_Summary(filelist_file,flt_suffix,dis_suffix,discard_suffix,out_flt_suffix,out_dis_suffix,dirs,json_file):
-	Dic={}
-	Dic_flt={}
-	Dic_HotSpot={}
-	control_Dic={}
-	control_Dic_flt={}
-	control_Dic_HotSpot={}
-	Dic_fus={}
+        Dic={}
+        Dic_flt={}
+        Dic_HotSpot={}
+        control_Dic={}
+        control_Dic_flt={}
+        control_Dic_HotSpot={}
+        Dic_fus={}
 
-	with open (json_file) as fp:
-		config=json.load(fp)
-		num_dis=config["number_dis"]
-		num_pass=config["number_pass"]
-		num_hot=config["number_HotSpot"]
-		hot_type=config["HotSpot_type"]
-		if 'fusion_suffix' in config:
-			fusion_suffix=config["fusion_suffix"]
+        with open (json_file) as fp:
+                config=json.load(fp)
+                num_dis=config["number_dis"]
+                num_pass=config["number_pass"]
+                num_hot=config["number_HotSpot"]
+                hot_type=config["HotSpot_type"]
+                if 'fusion_suffix' in config:
+                        fusion_suffix=config["fusion_suffix"]
 
-			with open(filelist_file) as FILELIST:
-				for i in FILELIST:
-					sample=i.split(" ")[0]
-					flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix
-					dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix
-					read_fus(flt_fus,Dic_fus)
-					read_fus(dis_fus,Dic_fus)
-			with open(filelist_file) as FILELIST:
-				for i in FILELIST:
-					sample=i.split(" ")[0]
-					flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix
-					out_flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix+"2"
-					dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix
-					out_dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix+"2"
-					Rewrite_fus(flt_fus,Dic_fus,out_flt_fus)
-					Rewrite_fus(dis_fus,Dic_fus,out_dis_fus)
+                        with open(filelist_file) as FILELIST:
+                                for i in FILELIST:
+                                        sample=i.split(" ")[0]
+                                        flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix
+                                        dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix
+                                        read_fus(flt_fus,Dic_fus)
+                                        read_fus(dis_fus,Dic_fus)
+                        with open(filelist_file) as FILELIST:
+                                for i in FILELIST:
+                                        sample=i.split(" ")[0]
+                                        flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix
+                                        out_flt_fus=dirs+sample+"/"+sample+".flt"+fusion_suffix+"2"
+                                        dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix
+                                        out_dis_fus=dirs+sample+"/"+sample+".dis"+fusion_suffix+"2"
+                                        Rewrite_fus(flt_fus,Dic_fus,out_flt_fus)
+                                        Rewrite_fus(dis_fus,Dic_fus,out_dis_fus)
 
-	####获取不同位点的重复次数
-	with open(filelist_file) as FILELIST:
-		for i in FILELIST:
-			length=len(i.split(" "))
-			if length==3:
-				sample=i.split(" ")[0]
-				flt_file=dirs+sample+"/"+sample+flt_suffix
-				dis_file=dirs+sample+"/"+sample+dis_suffix
-				if discard_suffix:
-					discard_file=dirs+sample+"/"+sample+discard_suffix
-					read(discard_file,Dic)
-				read(flt_file,Dic)
-				read(flt_file,Dic_flt)
-				read(dis_file,Dic)
-				read_Hotspot(sample,flt_file,Dic_HotSpot,hot_type)
-			else:
-				sample=i.split(" ")[0]
-				control_sample=i.split(" ")[3]
-				flt_file=dirs+sample+"/"+sample+flt_suffix
-				dis_file=dirs+sample+"/"+sample+dis_suffix
-				if discard_suffix:
-					discard_file=dirs+sample+"/"+sample+discard_suffix
-					read(discard_file,Dic)
-				read(flt_file,Dic)
-				read(flt_file,Dic_flt)
-				read(dis_file,Dic)
-				read_Hotspot(sample,flt_file,Dic_HotSpot,hot_type)
-				
-				control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
-				control_dis_file=dirs+sample+"/"+control_sample+dis_suffix
-				if discard_suffix:
-					control_discard_file=dirs+sample+"/"+control_sample+discard_suffix
-					read(control_discard_file,control_Dic)
-				read(control_flt_file,control_Dic)
-				read(control_flt_file,control_Dic_flt)
-				read(control_dis_file,control_Dic)
-				read_Hotspot(sample,control_flt_file,control_Dic_HotSpot,hot_type)
-	####根据获取到的不同位点的重复次数，对文件进行重新读写
-	with open(filelist_file) as FILELIST:
-		for i in FILELIST:
-			length=len( i.split(" ") )
-			if length==3:
-				sample=i.split(" ")[0]
-				flt_file=dirs+sample+"/"+sample+flt_suffix
-				dis_file=dirs+sample+"/"+sample+dis_suffix
-				dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
-				flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
-				dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
-				flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
-			else:
-				sample=i.split(" ")[0]
-				flt_file=dirs+sample+"/"+sample+flt_suffix
-				dis_file=dirs+sample+"/"+sample+dis_suffix
-				dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
-				flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
-				dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
-				flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
+        ####获取不同位点的重复次数
+        with open(filelist_file) as FILELIST:
+                for i in FILELIST:
+                        length=len(i.split(" "))
+                        if length==3:
+                                sample=i.split(" ")[0]
+                                flt_file=dirs+sample+"/"+sample+flt_suffix
+                                dis_file=dirs+sample+"/"+sample+dis_suffix
+                                if discard_suffix:
+                                        discard_file=dirs+sample+"/"+sample+discard_suffix
+                                        read(discard_file,Dic)
+                                read(flt_file,Dic)
+                                read(flt_file,Dic_flt)
+                                read(dis_file,Dic)
+                                read_Hotspot(sample,flt_file,Dic_HotSpot,hot_type)
+                        else:
+                                sample=i.split(" ")[0]
+                                control_sample=i.split(" ")[3]
+                                flt_file=dirs+sample+"/"+sample+flt_suffix
+                                dis_file=dirs+sample+"/"+sample+dis_suffix
+                                if discard_suffix:
+                                        discard_file=dirs+sample+"/"+sample+discard_suffix
+                                        read(discard_file,Dic)
+                                read(flt_file,Dic)
+                                read(flt_file,Dic_flt)
+                                read(dis_file,Dic)
+                                read_Hotspot(sample,flt_file,Dic_HotSpot,hot_type)
 
-				control_sample=i.split(" ")[3]
-				control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
-				control_dis_file=dirs+sample+"/"+control_sample+dis_suffix
-				control_dis_file_out=dirs+sample+"/"+control_sample+out_dis_suffix
-				control_flt_file_out=dirs+sample+"/"+control_sample+out_flt_suffix
-				dis_Rewrite(control_dis_file,control_Dic,control_dis_file_out,num_dis)
-				flt_Rewrite(control_flt_file,control_Dic,control_Dic_HotSpot,control_flt_file_out,sample,num_pass,num_hot,hot_type)
+                                control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
+                                control_dis_file=dirs+sample+"/"+control_sample+dis_suffix
+                                if discard_suffix:
+                                        control_discard_file=dirs+sample+"/"+control_sample+discard_suffix
+                                        read(control_discard_file,control_Dic)
+                                read(control_flt_file,control_Dic)
+                                read(control_flt_file,control_Dic_flt)
+                                read(control_dis_file,control_Dic)
+                                read_Hotspot(sample,control_flt_file,control_Dic_HotSpot,hot_type)
+        ####根据获取到的不同位点的重复次数，对文件进行重新读写
+        with open(filelist_file) as FILELIST:
+                for i in FILELIST:
+                        length=len( i.split(" ") )
+                        if length==3:
+                                sample=i.split(" ")[0]
+                                flt_file=dirs+sample+"/"+sample+flt_suffix
+                                dis_file=dirs+sample+"/"+sample+dis_suffix
+                                dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
+                                flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
+                                dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
+                                flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
+                        else:
+                                sample=i.split(" ")[0]
+                                flt_file=dirs+sample+"/"+sample+flt_suffix
+                                dis_file=dirs+sample+"/"+sample+dis_suffix
+                                dis_file_out=dirs+sample+"/"+sample+out_dis_suffix
+                                flt_file_out=dirs+sample+"/"+sample+out_flt_suffix
+                                dis_Rewrite(dis_file,Dic,dis_file_out,num_dis)
+                                flt_Rewrite(flt_file,Dic,Dic_HotSpot,flt_file_out,sample,num_pass,num_hot,hot_type)
+
+                                control_sample=i.split(" ")[3]
+                                control_flt_file=dirs+sample+"/"+control_sample+flt_suffix
+                                control_dis_file=dirs+sample+"/"+control_sample+dis_suffix
+                                control_dis_file_out=dirs+sample+"/"+control_sample+out_dis_suffix
+                                control_flt_file_out=dirs+sample+"/"+control_sample+out_flt_suffix
+                                dis_Rewrite(control_dis_file,control_Dic,control_dis_file_out,num_dis)
+                                flt_Rewrite(control_flt_file,control_Dic,control_Dic_HotSpot,control_flt_file_out,sample,num_pass,num_hot,hot_type)
 
 
 ###########################################################################################################################################
 def argparser():
     desc='''Samples and Summary SNVIndelReFilter '''
     prog='SNVIndelReFilter'
-    version='v2.1.0'
+    version='v2.2.0'
     parser=argparse.ArgumentParser(description=desc,prog=prog,add_help=False)
     required=parser.add_argument_group('optional')
     subparsers=parser.add_subparsers(help='sub-command help')
@@ -521,3 +591,4 @@ if __name__ == "__main__":
         dirs=args.dir
         json_file=args.json
         SNVIndelReFilter_Summary(filelist_file, flt_suffix, dis_suffix, discard_suffix,out_flt_suffix, out_dis_suffix,dirs,json_file)
+
